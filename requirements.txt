@@ -1,0 +1,5 @@
+sounddevice>=0.4.6
+numpy>=1.24.0
+faster-whisper>=0.10.0
+pexpect>=4.9.0
+httpx>=0.27.0
