@@ -8,7 +8,11 @@ from typing import IO, Any
 IS_WINDOWS = sys.platform == "win32"
 
 if IS_WINDOWS:
+    import ctypes
     import msvcrt
+    from ctypes import wintypes
+
+    from winpty import PtyProcess  # type: ignore[import-not-found]
 else:
     import signal
     import termios
@@ -83,17 +87,15 @@ class ClaudePTY:
         self.input_thread.start()
 
     def _start_windows(self, args: list[str] | None = None) -> None:
-        """Start Claude Code on Windows using pexpect.popen_spawn."""
+        """Start Claude Code on Windows using pywinpty."""
         import shutil
-
-        from pexpect import popen_spawn
 
         # Find full path to claude executable
         claude_path = shutil.which("claude")
         if not claude_path:
             raise FileNotFoundError("Claude Code not found in PATH")
 
-        # Build command string for popen_spawn
+        # Build command string for pywinpty
         cmd = claude_path
         if args:
             # Quote args that contain spaces
@@ -105,8 +107,10 @@ class ClaudePTY:
                     quoted_args.append(arg)
             cmd = cmd + " " + " ".join(quoted_args)
 
-        # Use pexpect's PopenSpawn for Windows
-        self.process = popen_spawn.PopenSpawn(cmd, encoding="utf-8")
+        # Use pywinpty for true PTY support on Windows
+        self.process = PtyProcess.spawn(
+            cmd, dimensions=(self._pty_lines, self.term_cols)
+        )
 
     def _start_unix(self, args: list[str] | None = None) -> None:
         """Start Claude Code on Unix using PTY."""
@@ -145,26 +149,39 @@ class ClaudePTY:
             self._read_output_unix()
 
     def _read_output_windows(self) -> None:
-        """Read output on Windows using PopenSpawn."""
-        from pexpect import EOF, TIMEOUT
+        """Read output on Windows using pywinpty."""
+        import re
+        import time
+
+        # Pattern to filter terminal capability responses (DA1, DA2, etc.)
+        da_pattern = re.compile(r'\x1b\[\?[0-9;]*c')
 
         while self.running and self.process:
             try:
-                # PopenSpawn has read_nonblocking like regular pexpect
-                char = self.process.read_nonblocking(size=1, timeout=0.1)
-                sys.stdout.write(char)
-                sys.stdout.flush()
+                if not self.process.isalive():
+                    self.running = False
+                    break
 
-                # Add to screen buffer
-                with self._buffer_lock:
-                    self._screen_buffer += char
-                    if len(self._screen_buffer) > self.SCREEN_BUFFER_SIZE:
-                        self._screen_buffer = self._screen_buffer[
-                            -self.SCREEN_BUFFER_SIZE:
-                        ]
-            except TIMEOUT:
-                continue
-            except EOF:
+                # Read available data from PTY
+                data = self.process.read(1024)
+                if data:
+                    # Filter out Device Attributes responses
+                    data = da_pattern.sub('', data)
+                    if data:
+                        sys.stdout.write(data)
+                        sys.stdout.flush()
+
+                        # Add to screen buffer
+                        with self._buffer_lock:
+                            self._screen_buffer += data
+                            if len(self._screen_buffer) > self.SCREEN_BUFFER_SIZE:
+                                self._screen_buffer = self._screen_buffer[
+                                    -self.SCREEN_BUFFER_SIZE:
+                                ]
+                else:
+                    # No data available, small sleep to prevent CPU spinning
+                    time.sleep(0.01)
+            except EOFError:
                 self.running = False
                 break
             except Exception:
@@ -240,7 +257,7 @@ class ClaudePTY:
                         data = char
 
                     if data and self.process and self.running:
-                        self.process.send(data)
+                        self.process.write(data)
                 else:
                     # Small sleep to prevent CPU spinning
                     import time
@@ -283,6 +300,24 @@ class ClaudePTY:
             # Keep last ~50 lines
             lines = text.split('\n')
             return '\n'.join(lines[-50:])
+
+    def has_menu_prompt(self) -> bool:
+        """Best-effort detection of selection/menu prompts."""
+        text = self.get_screen_state()
+        if "❯" in text:
+            return True
+        import re
+        # Common yes/no style prompts
+        if re.search(r'\[(?:y/n|Y/N|yes/no|Yes/No)\]', text):
+            return True
+        # Numbered options combined with permission-like wording
+        if re.search(r'(?m)^\s*\d+\.\s+\w+', text) and re.search(
+            r'\b(allow|deny|approve|reject|permission|permit|grant|refuse)\b',
+            text,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        return False
 
     def _restore_terminal(self) -> None:
         """Restore terminal settings to normal mode."""
@@ -341,9 +376,82 @@ class ClaudePTY:
         """Send text input to Claude Code."""
         if not self.process or not self.running:
             return
-        # PopenSpawn and spawn both have .send() method
-        self.process.send(text)
-        self.process.send("\r")
+        if IS_WINDOWS:
+            if not self._inject_windows_text(text + "\r"):
+                self.process.write(text + "\r")
+        else:
+            self.process.send(text)
+            self.process.send("\r")
+
+    def _inject_windows_text(self, text: str) -> bool:
+        """Inject text into Windows console input buffer as key events."""
+        if not IS_WINDOWS:
+            return False
+        if not text:
+            return True
+        try:
+            kernel32 = ctypes.WinDLL(  # type: ignore[attr-defined]
+                "kernel32", use_last_error=True
+            )
+            STD_INPUT_HANDLE = -10
+            KEY_EVENT = 0x0001
+            VK_RETURN = 0x0D
+            VK_TAB = 0x09
+            VK_ESCAPE = 0x1B
+            VK_BACK = 0x08
+
+            class KEY_EVENT_RECORD(ctypes.Structure):
+                _fields_ = [
+                    ("bKeyDown", wintypes.BOOL),
+                    ("wRepeatCount", wintypes.WORD),
+                    ("wVirtualKeyCode", wintypes.WORD),
+                    ("wVirtualScanCode", wintypes.WORD),
+                    ("uChar", wintypes.WCHAR),
+                    ("dwControlKeyState", wintypes.DWORD),
+                ]
+
+            class INPUT_RECORD(ctypes.Structure):
+                class EventUnion(ctypes.Union):
+                    _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
+
+                _fields_ = [("EventType", wintypes.WORD), ("Event", EventUnion)]
+
+            handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+            if handle == wintypes.HANDLE(-1).value or handle == 0:
+                return False
+
+            records = []
+            for ch in text:
+                vk = 0
+                if ch == "\r":
+                    vk = VK_RETURN
+                elif ch == "\t":
+                    vk = VK_TAB
+                elif ch == "\x1b":
+                    vk = VK_ESCAPE
+                elif ch == "\b":
+                    vk = VK_BACK
+                for is_down in (True, False):
+                    rec = INPUT_RECORD()
+                    rec.EventType = KEY_EVENT
+                    rec.Event.KeyEvent = KEY_EVENT_RECORD(
+                        bKeyDown=is_down,
+                        wRepeatCount=1,
+                        wVirtualKeyCode=vk,
+                        wVirtualScanCode=0,
+                        uChar=ch,
+                        dwControlKeyState=0,
+                    )
+                    records.append(rec)
+
+            buffer = (INPUT_RECORD * len(records))(*records)
+            written = wintypes.DWORD(0)
+            ok = kernel32.WriteConsoleInputW(
+                handle, buffer, len(records), ctypes.byref(written)
+            )
+            return bool(ok and written.value == len(records))
+        except Exception:
+            return False
 
     def send_key(self, key: str) -> None:
         """Send a special key to Claude Code."""
@@ -380,8 +488,11 @@ class ClaudePTY:
             # Unknown key name - send as-is
             data = key
 
-        # PopenSpawn and spawn both have .send() method
-        self.process.send(data)
+        if IS_WINDOWS:
+            if not self._inject_windows_text(data):
+                self.process.write(data)
+        else:
+            self.process.send(data)
 
     def send_keys(self, keys: list[str], delay: float = 0.05) -> None:
         """Send a sequence of keys with small delays between them."""
@@ -394,15 +505,15 @@ class ClaudePTY:
         """Send Escape key to interrupt Claude Code."""
         if not self.process or not self.running:
             return
-        self.process.send("\x1b")  # ESC character
+        self.send_key("escape")
 
     def send_interrupt(self) -> None:
         """Send Ctrl+C to Claude Code."""
         if not self.process or not self.running:
             return
         if IS_WINDOWS:
-            # PopenSpawn: send Ctrl+C character
-            self.process.send("\x03")
+            if not self._inject_windows_text("\x03"):
+                self.process.write("\x03")
         else:
             self.process.sendcontrol("c")
 
@@ -413,11 +524,7 @@ class ClaudePTY:
 
         if self.process:
             if IS_WINDOWS:
-                # PopenSpawn wraps subprocess.Popen in .proc
-                if hasattr(self.process, 'proc'):
-                    self.process.proc.terminate()
-                else:
-                    self.process.kill(9)
+                self.process.terminate()
             else:
                 self.process.close()
 
@@ -425,11 +532,7 @@ class ClaudePTY:
         """Check if Claude Code is still running."""
         if not self.process:
             return False
-        if IS_WINDOWS:
-            # PopenSpawn wraps Popen in .proc
-            return bool(self.process.proc.poll() is None)
-        else:
-            return bool(self.process.isalive())
+        return bool(self.process.isalive())
 
     def _track_escape_sequence(self, char: str) -> None:
         """Track escape sequences to detect scroll region resets."""

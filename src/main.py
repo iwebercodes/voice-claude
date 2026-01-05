@@ -104,8 +104,7 @@ class VoiceClaude:
         self.set_state(State.SPEAKING)
         # Send ESC only if Claude is generating, not if showing a menu/dialog
         if self.claude:
-            screen = self.claude.get_screen_state()
-            if '❯' not in screen:
+            if not self.claude.has_menu_prompt():
                 self.claude.send_escape()
 
     def execute_action(self, action: dict[str, Any]) -> None:
