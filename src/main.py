@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Voice-controlled Claude Code with intermediary agent."""
 
+import atexit
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -200,13 +202,29 @@ def main() -> None:
     claude_args = sys.argv[1:]
 
     app = VoiceClaude(claude_args=claude_args)
+
+    # Track if cleanup has already run to avoid double cleanup
+    cleanup_done = False
+
+    def do_cleanup() -> None:
+        nonlocal cleanup_done
+        if not cleanup_done:
+            cleanup_done = True
+            app.cleanup()
+
+    # Register cleanup for normal exit
+    atexit.register(do_cleanup)
+
+    # Unix: handle SIGTERM (kill command) for graceful shutdown
+    if sys.platform != "win32":
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
     try:
         app.initialize()
         app.run()
     except KeyboardInterrupt:
         pass
-    finally:
-        app.cleanup()
+    # atexit handles cleanup
 
 
 if __name__ == "__main__":

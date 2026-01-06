@@ -107,9 +107,14 @@ class ClaudePTY:
                     quoted_args.append(arg)
             cmd = cmd + " " + " ".join(quoted_args)
 
+        # Use original working directory if set by launcher
+        original_cwd = os.environ.get("VOICE_CLAUDE_ORIGINAL_CWD")
+
         # Use pywinpty for true PTY support on Windows
         self.process = PtyProcess.spawn(
-            cmd, dimensions=(self._pty_lines, self.term_cols)
+            cmd,
+            dimensions=(self._pty_lines, self.term_cols),
+            cwd=original_cwd,
         )
 
     def _start_unix(self, args: list[str] | None = None) -> None:
@@ -123,11 +128,15 @@ class ClaudePTY:
         # Register resize handler
         signal.signal(signal.SIGWINCH, self._handle_resize)
 
+        # Use original working directory if set by launcher
+        original_cwd = os.environ.get("VOICE_CLAUDE_ORIGINAL_CWD")
+
         self.process = pexpect.spawn(
             "claude",
             args=args or [],
             encoding="utf-8",
             dimensions=dimensions,
+            cwd=original_cwd,
         )
 
         # Open debug file

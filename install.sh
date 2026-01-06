@@ -164,6 +164,10 @@ create_launcher() {
     LAUNCHER="$INSTALL_DIR/voice-claude"
     cat > "$LAUNCHER" << 'EOF'
 #!/bin/bash
+# Capture original working directory before changing to installation dir
+VOICE_CLAUDE_ORIGINAL_CWD="$PWD"
+export VOICE_CLAUDE_ORIGINAL_CWD
+
 # Resolve symlinks to get the actual script location
 SOURCE="${BASH_SOURCE[0]}"
 while [ -L "$SOURCE" ]; do
