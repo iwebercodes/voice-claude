@@ -2,6 +2,8 @@
 
 Voice input wrapper for [Claude Code](https://code.claude.com/docs). Speak to your terminal instead of typing.
 
+![Voice Claude Demo](demo.gif)
+
 ---
 
 **[Connect with me on LinkedIn](https://www.linkedin.com/in/ilja-weber-bb7135b5)** - I'm building more voice-powered dev tools and would love to hear your ideas. Drop me a message with your feedback, feature requests, or just say hi!
