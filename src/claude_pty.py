@@ -8,9 +8,7 @@ from typing import IO, Any
 IS_WINDOWS = sys.platform == "win32"
 
 if IS_WINDOWS:
-    import ctypes
     import msvcrt
-    from ctypes import wintypes
 
     from winpty import PtyProcess  # type: ignore[import-not-found]
 else:
@@ -383,84 +381,18 @@ class ClaudePTY:
 
     def send(self, text: str) -> None:
         """Send text input to Claude Code."""
+        import time
+
         if not self.process or not self.running:
             return
         if IS_WINDOWS:
-            if not self._inject_windows_text(text + "\r"):
-                self.process.write(text + "\r")
+            # Send text first, pause, then send Enter separately
+            self.process.write(text)
+            time.sleep(0.2)
+            self.process.write("\r")
         else:
             self.process.send(text)
             self.process.send("\r")
-
-    def _inject_windows_text(self, text: str) -> bool:
-        """Inject text into Windows console input buffer as key events."""
-        if not IS_WINDOWS:
-            return False
-        if not text:
-            return True
-        try:
-            kernel32 = ctypes.WinDLL(  # type: ignore[attr-defined]
-                "kernel32", use_last_error=True
-            )
-            STD_INPUT_HANDLE = -10
-            KEY_EVENT = 0x0001
-            VK_RETURN = 0x0D
-            VK_TAB = 0x09
-            VK_ESCAPE = 0x1B
-            VK_BACK = 0x08
-
-            class KEY_EVENT_RECORD(ctypes.Structure):
-                _fields_ = [
-                    ("bKeyDown", wintypes.BOOL),
-                    ("wRepeatCount", wintypes.WORD),
-                    ("wVirtualKeyCode", wintypes.WORD),
-                    ("wVirtualScanCode", wintypes.WORD),
-                    ("uChar", wintypes.WCHAR),
-                    ("dwControlKeyState", wintypes.DWORD),
-                ]
-
-            class INPUT_RECORD(ctypes.Structure):
-                class EventUnion(ctypes.Union):
-                    _fields_ = [("KeyEvent", KEY_EVENT_RECORD)]
-
-                _fields_ = [("EventType", wintypes.WORD), ("Event", EventUnion)]
-
-            handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
-            if handle == wintypes.HANDLE(-1).value or handle == 0:
-                return False
-
-            records = []
-            for ch in text:
-                vk = 0
-                if ch == "\r":
-                    vk = VK_RETURN
-                elif ch == "\t":
-                    vk = VK_TAB
-                elif ch == "\x1b":
-                    vk = VK_ESCAPE
-                elif ch == "\b":
-                    vk = VK_BACK
-                for is_down in (True, False):
-                    rec = INPUT_RECORD()
-                    rec.EventType = KEY_EVENT
-                    rec.Event.KeyEvent = KEY_EVENT_RECORD(
-                        bKeyDown=is_down,
-                        wRepeatCount=1,
-                        wVirtualKeyCode=vk,
-                        wVirtualScanCode=0,
-                        uChar=ch,
-                        dwControlKeyState=0,
-                    )
-                    records.append(rec)
-
-            buffer = (INPUT_RECORD * len(records))(*records)
-            written = wintypes.DWORD(0)
-            ok = kernel32.WriteConsoleInputW(
-                handle, buffer, len(records), ctypes.byref(written)
-            )
-            return bool(ok and written.value == len(records))
-        except Exception:
-            return False
 
     def send_key(self, key: str) -> None:
         """Send a special key to Claude Code."""
@@ -498,8 +430,7 @@ class ClaudePTY:
             data = key
 
         if IS_WINDOWS:
-            if not self._inject_windows_text(data):
-                self.process.write(data)
+            self.process.write(data)
         else:
             self.process.send(data)
 
@@ -521,8 +452,7 @@ class ClaudePTY:
         if not self.process or not self.running:
             return
         if IS_WINDOWS:
-            if not self._inject_windows_text("\x03"):
-                self.process.write("\x03")
+            self.process.write("\x03")
         else:
             self.process.sendcontrol("c")
 

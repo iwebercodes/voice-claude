@@ -89,6 +89,12 @@ echo [INFO] Installing Python dependencies...
 call venv\Scripts\activate.bat
 pip install --upgrade pip
 pip install -r requirements.txt
+
+:: Clean Python cache to avoid stale bytecode
+echo [INFO] Cleaning Python cache...
+for /d /r src %%d in (__pycache__) do @if exist "%%d" rd /s /q "%%d"
+del /s /q src\*.pyc >nul 2>&1
+
 call venv\Scripts\deactivate.bat
 
 popd

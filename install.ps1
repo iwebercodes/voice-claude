@@ -110,6 +110,11 @@ function Initialize-Venv {
     pip install --upgrade pip
     pip install -r requirements.txt
 
+    # Clean Python cache to avoid stale bytecode
+    Write-Info "Cleaning Python cache..."
+    Get-ChildItem -Path src -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+    Get-ChildItem -Path src -Recurse -Filter "*.pyc" -ErrorAction SilentlyContinue | Remove-Item -Force
+
     deactivate
     Pop-Location
 }

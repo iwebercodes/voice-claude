@@ -154,6 +154,11 @@ setup_venv() {
     pip install --upgrade pip
     pip install -r requirements.txt
 
+    # Clean Python cache to avoid stale bytecode
+    info "Cleaning Python cache..."
+    find src -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    find src -type f -name "*.pyc" -delete 2>/dev/null || true
+
     deactivate
 }
 
